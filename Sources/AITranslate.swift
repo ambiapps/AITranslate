@@ -152,6 +152,10 @@ struct AITranslate: AsyncParsableCommand {
         )
       )
     }
+    localizationGroup.localizations?[sourceLanguage] = LocalizationUnit(
+      stringUnit: StringUnit(
+        state: "translated",
+        value: key))
   }
 
   func save(_ dict: StringsDict) throws {
