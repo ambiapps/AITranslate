@@ -21,7 +21,7 @@ swift run ai-translate /path/to/your/Localizable.xcstrings -o <your-openai-API-k
 Help output:
 
 ```
-  USAGE: ai-translate <input-file> --languages <languages> --open-ai-key <open-ai-key> [--verbose] [--skip-backup] [--force]
+  USAGE: ai-translate <input-file> --languages <languages> --open-ai-key <open-ai-key> [--verbose] [--skip-backup] [--force] [--limit <limit>]
 
   ARGUMENTS:
     <input-file>
@@ -33,5 +33,6 @@ Help output:
     -v, --verbose
     -s, --skip-backup       By default a backup of the input will be created. When this flag is provided, the backup is skipped.
     -f, --force             Forces all strings to be translated, even if an existing translation is present.
+    --limit <limit>         Stops after translating this many strings (each into every requested language), saving the progress so far. Run again to continue.
     -h, --help              Show help information.
 ```
