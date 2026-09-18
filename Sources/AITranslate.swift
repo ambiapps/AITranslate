@@ -57,6 +57,16 @@ struct AITranslate: AsyncParsableCommand {
   )
   var force: Bool = false
 
+  @Option(
+    name: .long,
+    help: ArgumentHelp("Stops after translating this many strings (each into every requested language), saving the progress so far. Run again to continue.")
+  )
+  var limit: Int?
+
+  /// A run of failures this long means the API is down or out of credits, so the rest
+  /// would fail as well.
+  static let maximumConsecutiveFailures = 20
+
   lazy var openAI: OpenAI = {
     let configuration = OpenAI.Configuration(
       token: openAIKey,
@@ -68,6 +78,8 @@ struct AITranslate: AsyncParsableCommand {
   }()
 
   var numberOfTranslationsProcessed = 0
+  var numberOfRequests = 0
+  var numberOfConsecutiveFailures = 0
 
   mutating func run() async throws {
     do {
@@ -79,8 +91,13 @@ struct AITranslate: AsyncParsableCommand {
       let totalNumberOfTranslations = dict.strings.count * languages.count
       let start = Date()
       var previousPercentage: Int = -1
+      var numberOfStringsTranslated = 0
+      var stoppedEarly = false
 
-      for entry in dict.strings {
+      // Sorted so that a `--limit`ed run picks the same strings every time.
+      for entry in dict.strings.sorted(by: { $0.key < $1.key }) {
+        let numberOfRequestsBefore = numberOfRequests
+
         try await processEntry(
           key: entry.key,
           localizationGroup: entry.value,
@@ -97,6 +114,22 @@ struct AITranslate: AsyncParsableCommand {
         }
 
         numberOfTranslationsProcessed += languages.count
+
+        if numberOfRequests > numberOfRequestsBefore {
+          numberOfStringsTranslated += 1
+        }
+
+        if numberOfConsecutiveFailures >= Self.maximumConsecutiveFailures {
+          print("[❌] \(numberOfConsecutiveFailures) translations failed in a row, giving up")
+          stoppedEarly = true
+          break
+        }
+
+        if let limit, numberOfStringsTranslated >= limit {
+          print("[⏸️] Reached the limit of \(limit) strings")
+          stoppedEarly = true
+          break
+        }
       }
 
       try save(dict)
@@ -106,7 +139,7 @@ struct AITranslate: AsyncParsableCommand {
       formatter.unitsStyle = .full
       let formattedString = formatter.string(from: Date().timeIntervalSince(start))!
 
-      print("[✅] 100% \n[⏰] Translations time: \(formattedString)")
+      print("\(stoppedEarly ? "[💾] Saved progress" : "[✅] 100%") \n[⏰] Translations time: \(formattedString)")
     } catch let error {
       throw error
     }
@@ -136,19 +169,23 @@ struct AITranslate: AsyncParsableCommand {
       // dictionary keyed by `sourceLanguage`.
       let sourceText = localizationEntries[sourceLanguage]?.stringUnit?.value ?? key
 
-      let result = try await performTranslation(
+      // A failed translation leaves the entry as it was, so that it is picked up
+      // again by the next run instead of being saved as an empty "error" unit.
+      guard let result = try await performTranslation(
         sourceText,
         from: sourceLanguage,
         to: lang,
         context: localizationGroup.comment,
         openAI: openAI
-      )
+      ) else {
+        continue
+      }
 
       localizationGroup.localizations = localizationEntries
       localizationGroup.localizations?[lang] = LocalizationUnit(
         stringUnit: StringUnit(
-          state: result == nil ? "error" : "translated",
-          value: result ?? ""
+          state: "translated",
+          value: result
         )
       )
     }
@@ -183,7 +220,7 @@ struct AITranslate: AsyncParsableCommand {
     }
   }
 
-  func performTranslation(
+  mutating func performTranslation(
     _ text: String,
     from source: String,
     to target: String,
@@ -217,9 +254,12 @@ struct AITranslate: AsyncParsableCommand {
       model: .gpt4_o
     )
 
+    numberOfRequests += 1
+
     do {
       let result = try await openAI.chats(query: query)
       let translation = result.choices.first?.message.content?.string ?? text
+      numberOfConsecutiveFailures = 0
 
       if verbose {
         print("[\(target)] " + text + " -> " + translation)
@@ -227,6 +267,7 @@ struct AITranslate: AsyncParsableCommand {
 
       return translation
     } catch let error {
+      numberOfConsecutiveFailures += 1
       print("[❌] Failed to translate \(text) into \(target)")
 
       if verbose {
